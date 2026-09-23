@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebXR Setup for Meta Quest 3</title>
+</head>
+<body>
+    <!--
+    === STEP 1: VERIFY THREE.JS VERSION & CORE IMPORTS ===
+    Ensure your Three.js installation includes WebXR capabilities (r115+).
+    If you import Three.js via separate modules, make sure OrbitControls or 
+    other dependencies do not overwrite your camera rig transforms.
+    -->
+
+    <script>
+    // =========================================================================
+    // 🚀 STEP 2: GLOBAL VARIABLES & RIG INITIALIZATION
+    // Paste these definitions at the very top of your global variables section.
+    // =========================================================================
+    let vrRaycaster = new THREE.Raycaster();
+    let cameraRig; // This wrapper is absolutely required to move the camera in VR
+    let vrControllers = [];
+
+    // =========================================================================
+    // 🛠️ STEP 3: WRAP YOUR EXISTING CAMERA INSIDE A RIG
+    // Find where you create your 'camera' and 'scene', then paste this code
+    // right below them. DO NOT add the camera directly to the scene anymore.
+    // =========================================================================
+    
+    // Create the camera rig (Acts as the player's body in space)
+    cameraRig = new THREE.Group();
+    cameraRig.position.set(0, 0, 5); // Set your initial scene starting position here
+    scene.add(cameraRig);
+
+    // Add your existing camera to this rig instead of adding it directly to the scene
+    cameraRig.add(camera); 
+
+    // =========================================================================
+    // 🎯 STEP 4: CONTROLLER AND EVENT FORWARDING SETUP
+    // Locate the line 'renderer.xr.enabled = true;' in your file.
+    // Paste this ENTIRE block directly below it.
+    // =========================================================================
+    renderer.xr.enabled = true;
+
+    // Build VR Handheld Controllers and Laser Visualizers
+    for (let i = 0; i < 2; i++) {
+        const controller = renderer.xr.getController(i);
+        cameraRig.add(controller); // Attach to camera rig so lasers move with the player
+        vrControllers.push(controller);
+
+        // Build a visual 10-meter laser beam line for precision aiming
+        const laserGeometry = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, 0),
+            new THREE.Vector3(0, 0, -10)
+        ]);
+        const laserMaterial = new THREE.LineBasicMaterial({
+            color: 0x00ff00, // Bright green laser pointer
+            transparent: true,
+            opacity: 0.6
+        });
+        const laserLine = new THREE.Line(laserGeometry, laserMaterial);
+        laserLine.name = 'laser';
+        controller.add(laserLine);
+
+        // Bind the Meta Quest 3 trigger press to our universal event bridge
+        controller.addEventListener('select', handleVRInteractionBridge);
+        controller.addEventListener('selectstart', handleVRInteractionBridge);
+    }
+
+    /**
+     * UNIVERSAL VR TO HTML EVENT BRIDGE
+     * This interceptor converts VR trigger selections into native DOM clicks,
+     * entirely preserving your current sound arrays, safety checks, and sequential audio.
+     */
+    function handleVRInteractionBridge(event) {
+        const activeController = event.target;
+        
+        // Extract the absolute rotation and position matrix of the active controller
+        const rotationMatrix = new THREE.Matrix4();
+        rotationMatrix.identity().extractRotation(activeController.matrixWorld);
+        
+        vrRaycaster.ray.origin.setFromMatrixPosition(activeController.matrixWorld);
+        vrRaycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotationMatrix);
+
+        // Scan the scene for targets intersected by the controller's ray
+        const intersections = vrRaycaster.intersectObjects(scene.children, true);
+
+        if (intersections.length > 0) {
+            // Target the nearest intersected mesh object
+            const targetMesh = intersections[0].object;
+
+            // Unlock and resume the browser AudioContext explicitly upon interaction
+            if (THREE.AudioContext && THREE.AudioContext.getContext) {
+                const ctx = THREE.AudioContext.getContext();
+                if (ctx && ctx.state === 'suspended') {
+                    ctx.resume();
+                }
+            }
+
+            // FORWARD INTERACTION TO DOM:
+            // This calls the underlying HTML element click listener bound to your mesh,
+            // firing your complete voice stack cleanly.
+            if (targetMesh.element) {
+                targetMesh.element.click();
+            } else if (targetMesh.userData && targetMesh.userData.element) {
+                targetMesh.userData.element.click();
+            } else {
+                // Native Three.js fallback bubble dispatch
+                targetMesh.dispatchEvent({ type: 'click' });
+            }
+        }
+    }
+
+    // =========================================================================
+    // 🕹️ STEP 5: STANDALONE THUMBSTICK LOCOMOTION ENGINE
+    // Locate your primary animation loop function (usually called animate() or 
+    // running inside renderer.setAnimationLoop). 
+    // Paste this function definition inside your script, and call 
+    // 'processVRMovement();' at the very beginning of every frame update.
+    // =========================================================================
+    function processVRMovement() {
+        const xrSession = renderer.xr.getSession();
+        if (!xrSession) return;
+
+        // Iterate over connected spatial hardware inputs (Left & Right Touch Controllers)
+        for (const inputSource of xrSession.inputSources) {
+            if (inputSource.gamepad && inputSource.gamepad.axes) {
+                const gamepadAxes = inputSource.gamepad.axes;
+                
+                // Read standard Meta Quest thumbstick axis maps
+                // gamepadAxes[2] is Left/Right axis, gamepadAxes[3] is Forward/Backward axis
+                const deltaX = gamepadAxes[2] || 0;
+                const deltaZ = gamepadAxes[3] || 0;
+
+                // Threshold filter to eliminate hardware drift/dead-zones
+                if (Math.abs(deltaX) > 0.05 || Math.abs(deltaZ) > 0.05) {
+                    const movementSpeed = 0.04; // Adjust smooth walking velocity here
+                    
+                    // Align thumbstick forward vector with where the user is looking in VR
+                    const directionVector = new THREE.Vector3();
+                    camera.getWorldDirection(directionVector);
+                    directionVector.y = 0; // Lock movement plane horizontally to prevent floating
+                    directionVector.normalize();
+
+                    const sideVector = new THREE.Vector3();
+                    sideVector.crossVectors(camera.up, directionVector).normalize();
+
+                    // Apply coordinate offsets to the root camera rig wrapper
+                    cameraRig.position.addScaledVector(directionVector, -deltaZ * movementSpeed);
+                    cameraRig.position.addScaledVector(sideVector, deltaX * movementSpeed);
+                }
+            }
+        }
+    }
+    </script>
+</body>
+</html>
